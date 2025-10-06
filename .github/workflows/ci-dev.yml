@@ -1,4 +1,3 @@
-
 name: CI Dev Deployment
 on:
   push:
@@ -13,13 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
       - name: Build
         run: |
           npm ci || npm install
           npm run build || echo "No build needed"
           zip -r build.zip . -x ".git/*"
-      - uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: build-artifact
           path: build.zip
@@ -28,17 +29,23 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: dev
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
           name: build-artifact
-      - name: Setup GH CLI
-        uses: cli/gh-action@v2
+
+      # ✅ Crear/actualizar release con el action oficial
       - name: Release Dev Build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ vars.BUILD_TAG }}      # ej: dev-v1.0
+          name: ${{ vars.BUILD_TAG }}
+          body: ${{ vars.RELEASE_NOTE }}       # ej: Dev preview build
+          files: build.zip
+          draft: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ vars.BUILD_TAG }}
-          NOTE: ${{ vars.RELEASE_NOTE }}
-        run: |
-          gh release create "$TAG" build.zip --notes "$NOTE" --latest=false || \
-          gh release upload "$TAG" build.zip --clobber
