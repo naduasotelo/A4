@@ -48,7 +48,7 @@ jobs:
           else
             V=""
           fi
-          # Fallback estable si no hay package.json o version vacía
+          # Fallback estable si no hay version
           if [ -z "$V" ]; then V="${GITHUB_RUN_NUMBER}"; fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Using version: $V"
@@ -96,12 +96,12 @@ jobs:
           fi
           zip -r build.zip . -x ".git/*"
 
-      # ✅ Subimos el artifact SOLO desde Node 20 para evitar conflicto 409
-      - name: Upload artifact (versioned)
+      # ✅ subir una sola vez (Node 20) y con NOMBRE FIJO "build"
+      - name: Upload artifact (single, fixed name)
         if: matrix.node == 20
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ steps.ver.outputs.version }}
+          name: build
           path: build.zip
 
   deploy-staging:
@@ -111,14 +111,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Definimos VERSION con fallback estable
       - name: Set VERSION env
         run: echo "VERSION=${{ needs.build.outputs.version || github.run_number }}" >> $GITHUB_ENV
 
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ env.VERSION }}
+          name: build   # <-- nombre fijo
 
       - name: Release Staging
         uses: softprops/action-gh-release@v2
@@ -157,7 +156,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ env.VERSION }}
+          name: build   # <-- nombre fijo
 
       - name: Optional failure (for rollback demo)
         if: ${{ github.event.inputs.simulate_fail_prod == true }}
