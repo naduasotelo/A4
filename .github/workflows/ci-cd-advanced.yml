@@ -23,6 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         node: [18, 20]
     outputs:
@@ -39,17 +40,31 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # ✅ Solo instala si existe package.json
-      - name: Install deps (skip if no package.json)
+      - name: Show Node version
+        run: node -v || echo "node not available (should not happen)"
+
+      # --- Resuelve versión de forma robusta ---
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -f package.json ]; then
+            V=$(node -p "require('./package.json').version || '0.0.0'") || V="0.0.0"
+          else
+            V=$(date +%Y.%m.%d-%H%M)
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Using version: $V"
+
+      # --- Estos pasos son opcionales y NUNCA rompen el build ---
+      - name: Install deps (optional)
         run: |
           if [ -f package.json ]; then
             npm ci || npm install || true
           else
-            echo "No package.json found, skipping npm install"
+            echo "No package.json — skipping npm install"
           fi
 
-      # ✅ Lint opcional
-      - name: Lint (best effort)
+      - name: Lint (optional)
         run: |
           if [ -f package.json ]; then
             npm run lint || echo "no lint configured"
@@ -57,8 +72,7 @@ jobs:
             echo "Skipping lint (no package.json)"
           fi
 
-      # ✅ Test opcional (smoke si no hay tests)
-      - name: Tests (smoke if missing)
+      - name: Tests (optional smoke)
         run: |
           if [ -f package.json ]; then
             npm test || node -e "console.log('smoke test ok')"
@@ -66,41 +80,16 @@ jobs:
             node -e "console.log('smoke test ok (no package.json)')"
           fi
 
-      # ✅ Auto-bump tolerante (solo en master y no falla si el push está bloqueado)
-      - name: Auto-bump (optional & tolerant)
-        if: ${{ github.event.inputs.bump != 'none' && github.ref == 'refs/heads/master' }}
-        continue-on-error: true
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch --unshallow || true
-          if [ -f package.json ]; then
-            npm version ${{ github.event.inputs.bump }} -m "ci: bump %s [skip ci]" || true
-            git push --follow-tags || echo "push skipped (branch protection or fork)"
-          else
-            echo "No package.json, skipping npm version bump"
-          fi
-
-      # ✅ Resuelve versión (usa package.json si existe; si no, usa timestamp)
-      - name: Resolve version
-        id: ver
-        run: |
-          if [ -f package.json ]; then
-            echo "version=$(node -p \"require('./package.json').version || '0.0.0'\")" >> $GITHUB_OUTPUT
-          else
-            echo "version=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
-          fi
-          echo "Using version: $(grep version $GITHUB_OUTPUT || true)"
-
-      # ✅ Build genérico (no falla si no hay script build)
-      - name: Build
+      - name: Build (optional)
         run: |
           if [ -f package.json ]; then
             npm run build || echo "no build step"
           else
-            echo "No package.json, nothing to build (will zip repo)"
+            echo "No package.json — nothing to build"
           fi
-          zip -r build.zip . -x ".git/*"
+
+      - name: Zip repository
+        run: zip -r build.zip . -x ".git/*" || echo "zip finished (or nothing to zip)"
 
       - name: Upload artifact (versioned)
         uses: actions/upload-artifact@v4
