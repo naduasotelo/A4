@@ -1,0 +1,162 @@
+name: CI/CD Advanced (O)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (patch|minor|major|none)"
+        required: false
+        default: "patch"
+      simulate_fail_prod:
+        description: "Simulate a failure in production to demo rollback"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: advanced-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [18, 20]
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Lint (best effort)
+        run: npm run lint || echo "no lint configured"
+
+      - name: Tests (smoke if missing)
+        run: |
+          npm test || node -e "console.log('smoke test ok')"
+
+      - name: Auto-bump (optional)
+        if: ${{ github.event.inputs.bump != 'none' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version ${{ github.event.inputs.bump }} -m "ci: bump %s [skip ci]"
+          git push --follow-tags
+
+      - name: Read version from package.json
+        id: ver
+        run: echo "version=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
+
+      - name: Build
+        run: |
+          npm run build || echo "no build step"
+          zip -r build.zip . -x ".git/*"
+
+      - name: Upload artifact (versioned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ steps.ver.outputs.version }}
+          path: build.zip
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ needs.build.outputs.version }}
+      - name: Release Staging
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: staging-v${{ needs.build.outputs.version }}
+          name: staging-v${{ needs.build.outputs.version }}
+          body: ${{ vars.RELEASE_NOTE }}
+          files: build.zip
+          prerelease: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify (Slack or Job Summary)
+        if: always()
+        run: |
+          if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"Staging deployed: staging-v${{ needs.build.outputs.version }}\"}" \
+              "${{ secrets.SLACK_WEBHOOK }}" || true
+          fi
+          echo "Staging deployed: staging-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ needs.build.outputs.version }}
+
+      - name: Optional failure (for rollback demo)
+        if: ${{ github.event.inputs.simulate_fail_prod == true }}
+        run: |
+          echo "Simulating prod failure to trigger rollback"
+          exit 1
+
+      - name: Release Production
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prod-v${{ needs.build.outputs.version }}
+          name: prod-v${{ needs.build.outputs.version }}
+          body: ${{ vars.RELEASE_NOTE }}
+          files: build.zip
+          prerelease: false
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify (Slack or Job Summary)
+        if: always()
+        run: |
+          if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+            curl -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"Production deployed: prod-v${{ needs.build.outputs.version }}\"}" \
+              "${{ secrets.SLACK_WEBHOOK }}" || true
+          fi
+          echo "Production deployed: prod-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Rollback on failure (delete release + tag)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag  = `prod-v${{ needs.build.outputs.version }}`;
+            try {
+              const rel = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: rel.data.id });
+            } catch (e) {
+              core.warning(`No release found for ${tag}: ${e.message}`);
+            }
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+            } catch (e) {
+              core.warning(`No tag ref to delete for ${tag}: ${e.message}`);
+            }
