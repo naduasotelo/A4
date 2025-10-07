@@ -1,0 +1,71 @@
+name: CI/CD Deployment Pipeline
+on:
+  workflow_dispatch: {}   
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build
+        run: |
+          npm ci || npm install
+          npm run build || echo "No build needed"
+          zip -r build.zip . -x ".git/*"
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: build.zip
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+      - name: Release Staging
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ vars.BUILD_TAG }}        # staging-v1.0
+          name: ${{ vars.BUILD_TAG }}
+          body: ${{ vars.RELEASE_NOTE }}         # Testing pre-production release
+          files: build.zip
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production      
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+      - name: Release Production
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ vars.BUILD_TAG }}        # prod-v1.0
+          name: ${{ vars.BUILD_TAG }}
+          body: ${{ vars.RELEASE_NOTE }}         # Production release
+          files: build.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
