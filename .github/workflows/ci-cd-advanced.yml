@@ -11,10 +11,8 @@ on:
         description: "Simulate a failure in production to demo rollback"
         type: boolean
         default: false
-
 permissions:
   contents: write
-
 concurrency:
   group: advanced-${{ github.ref }}
   cancel-in-progress: true
@@ -34,16 +32,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-
       - name: Show Node version
         run: node -v || echo "node not available (should not happen)"
-
-      # --- Resuelve versión de forma robusta ---
       - name: Resolve version
         id: ver
         run: |
@@ -54,8 +48,6 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Using version: $V"
-
-      # --- Estos pasos son opcionales y NUNCA rompen el build ---
       - name: Install deps (optional)
         run: |
           if [ -f package.json ]; then
@@ -63,7 +55,6 @@ jobs:
           else
             echo "No package.json — skipping npm install"
           fi
-
       - name: Lint (optional)
         run: |
           if [ -f package.json ]; then
@@ -71,7 +62,6 @@ jobs:
           else
             echo "Skipping lint (no package.json)"
           fi
-
       - name: Tests (optional smoke)
         run: |
           if [ -f package.json ]; then
@@ -79,7 +69,6 @@ jobs:
           else
             node -e "console.log('smoke test ok (no package.json)')"
           fi
-
       - name: Build (optional)
         run: |
           if [ -f package.json ]; then
@@ -92,6 +81,7 @@ jobs:
         run: zip -r build.zip . -x ".git/*" || echo "zip finished (or nothing to zip)"
 
       - name: Upload artifact (versioned)
+        if: matrix.node == 20 
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ steps.ver.outputs.version }}
