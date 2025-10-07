@@ -28,30 +28,46 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Install
+
+      - name: Install deps
         run: npm ci || npm install
+
       - name: Lint (best effort)
         run: npm run lint || echo "no lint configured"
+
       - name: Tests (smoke if missing)
         run: |
           npm test || node -e "console.log('smoke test ok')"
 
-      - name: Auto-bump (optional)
-        if: ${{ github.event.inputs.bump != 'none' }}
+      - name: Auto-bump (optional & tolerant)
+        if: ${{ github.event.inputs.bump != 'none' && github.ref == 'refs/heads/master' }}
+        continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          npm version ${{ github.event.inputs.bump }} -m "ci: bump %s [skip ci]"
-          git push --follow-tags
+          git fetch --unshallow || true
+          npm version ${{ github.event.inputs.bump }} -m "ci: bump %s [skip ci]" || true
+          git push --follow-tags || echo "push skipped (branch protection or fork)"
 
-      - name: Read version from package.json
+      - name: Resolve version
         id: ver
-        run: echo "version=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
+        run: |
+          if [ -f package.json ]; then
+            echo "version=$(node -p \"require('./package.json').version || '0.0.0'\")" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
+          fi
+          echo "Using version: $(cat $GITHUB_OUTPUT || true)"
 
       - name: Build
         run: |
@@ -75,6 +91,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: build-${{ needs.build.outputs.version }}
+
       - name: Release Staging
         uses: softprops/action-gh-release@v2
         with:
@@ -89,11 +106,13 @@ jobs:
 
       - name: Notify (Slack or Job Summary)
         if: always()
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
-          if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+          if [ -n "$WEBHOOK" ]; then
             curl -X POST -H 'Content-type: application/json' \
               --data "{\"text\":\"Staging deployed: staging-v${{ needs.build.outputs.version }}\"}" \
-              "${{ secrets.SLACK_WEBHOOK }}" || true
+              "$WEBHOOK" || true
           fi
           echo "Staging deployed: staging-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
 
@@ -129,11 +148,13 @@ jobs:
 
       - name: Notify (Slack or Job Summary)
         if: always()
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
-          if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+          if [ -n "$WEBHOOK" ]; then
             curl -X POST -H 'Content-type: application/json' \
               --data "{\"text\":\"Production deployed: prod-v${{ needs.build.outputs.version }}\"}" \
-              "${{ secrets.SLACK_WEBHOOK }}" || true
+              "$WEBHOOK" || true
           fi
           echo "Production deployed: prod-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
 
@@ -148,11 +169,13 @@ jobs:
             try {
               const rel = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
               await github.rest.repos.deleteRelease({ owner, repo, release_id: rel.data.id });
+              core.info(`Deleted release for ${tag}`);
             } catch (e) {
-              core.warning(`No release found for ${tag}: ${e.message}`);
+              core.warning(`No release to delete for ${tag}: ${e.message}`);
             }
             try {
               await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+              core.info(`Deleted tag ${tag}`);
             } catch (e) {
               core.warning(`No tag ref to delete for ${tag}: ${e.message}`);
             }
