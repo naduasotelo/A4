@@ -11,8 +11,10 @@ on:
         description: "Simulate a failure in production to demo rollback"
         type: boolean
         default: false
+
 permissions:
   contents: write
+
 concurrency:
   group: advanced-${{ github.ref }}
   cancel-in-progress: true
@@ -32,22 +34,25 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Show Node version
-        run: node -v || echo "node not available (should not happen)"
+
       - name: Resolve version
         id: ver
         run: |
           if [ -f package.json ]; then
-            V=$(node -p "require('./package.json').version || '0.0.0'") || V="0.0.0"
+            V=$(node -p "require('./package.json').version || ''")
           else
-            V=$(date +%Y.%m.%d-%H%M)
+            V=""
           fi
+          # Fallback estable si no hay package.json o version vacía
+          if [ -z "$V" ]; then V="${GITHUB_RUN_NUMBER}"; fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Using version: $V"
+
       - name: Install deps (optional)
         run: |
           if [ -f package.json ]; then
@@ -55,6 +60,7 @@ jobs:
           else
             echo "No package.json — skipping npm install"
           fi
+
       - name: Lint (optional)
         run: |
           if [ -f package.json ]; then
@@ -62,6 +68,7 @@ jobs:
           else
             echo "Skipping lint (no package.json)"
           fi
+
       - name: Tests (optional smoke)
         run: |
           if [ -f package.json ]; then
@@ -69,6 +76,17 @@ jobs:
           else
             node -e "console.log('smoke test ok (no package.json)')"
           fi
+
+      - name: Auto-bump (optional & tolerant)
+        if: ${{ github.event.inputs.bump != 'none' && github.ref == 'refs/heads/master' && hashFiles('package.json') != '' }}
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch --unshallow || true
+          npm version ${{ github.event.inputs.bump }} -m "ci: bump %s [skip ci]" || true
+          git push --follow-tags || echo "push skipped (branch protection or fork)"
+
       - name: Build (optional)
         run: |
           if [ -f package.json ]; then
@@ -76,12 +94,11 @@ jobs:
           else
             echo "No package.json — nothing to build"
           fi
+          zip -r build.zip . -x ".git/*"
 
-      - name: Zip repository
-        run: zip -r build.zip . -x ".git/*" || echo "zip finished (or nothing to zip)"
-
+      # ✅ Subimos el artifact SOLO desde Node 20 para evitar conflicto 409
       - name: Upload artifact (versioned)
-        if: matrix.node == 20 
+        if: matrix.node == 20
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ steps.ver.outputs.version }}
@@ -94,16 +111,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Definimos VERSION con fallback estable
+      - name: Set VERSION env
+        run: echo "VERSION=${{ needs.build.outputs.version || github.run_number }}" >> $GITHUB_ENV
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ needs.build.outputs.version }}
+          name: build-${{ env.VERSION }}
 
       - name: Release Staging
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: staging-v${{ needs.build.outputs.version }}
-          name: staging-v${{ needs.build.outputs.version }}
+          tag_name: staging-v${{ env.VERSION }}
+          name: staging-v${{ env.VERSION }}
           body: ${{ vars.RELEASE_NOTE }}
           files: build.zip
           prerelease: true
@@ -118,10 +139,10 @@ jobs:
         run: |
           if [ -n "$WEBHOOK" ]; then
             curl -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"Staging deployed: staging-v${{ needs.build.outputs.version }}\"}" \
+              --data "{\"text\":\"Staging deployed: staging-v${{ env.VERSION }}\"}" \
               "$WEBHOOK" || true
           fi
-          echo "Staging deployed: staging-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Staging deployed: staging-v${{ env.VERSION }}" >> $GITHUB_STEP_SUMMARY
 
   deploy-production:
     needs: deploy-staging
@@ -130,10 +151,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Set VERSION env
+        run: echo "VERSION=${{ needs.build.outputs.version || github.run_number }}" >> $GITHUB_ENV
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ needs.build.outputs.version }}
+          name: build-${{ env.VERSION }}
 
       - name: Optional failure (for rollback demo)
         if: ${{ github.event.inputs.simulate_fail_prod == true }}
@@ -144,8 +168,8 @@ jobs:
       - name: Release Production
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: prod-v${{ needs.build.outputs.version }}
-          name: prod-v${{ needs.build.outputs.version }}
+          tag_name: prod-v${{ env.VERSION }}
+          name: prod-v${{ env.VERSION }}
           body: ${{ vars.RELEASE_NOTE }}
           files: build.zip
           prerelease: false
@@ -160,10 +184,10 @@ jobs:
         run: |
           if [ -n "$WEBHOOK" ]; then
             curl -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"Production deployed: prod-v${{ needs.build.outputs.version }}\"}" \
+              --data "{\"text\":\"Production deployed: prod-v${{ env.VERSION }}\"}" \
               "$WEBHOOK" || true
           fi
-          echo "Production deployed: prod-v${{ needs.build.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "Production deployed: prod-v${{ env.VERSION }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Rollback on failure (delete release + tag)
         if: failure()
@@ -172,7 +196,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const tag  = `prod-v${{ needs.build.outputs.version }}`;
+            const tag  = `prod-v${process.env.VERSION}`;
             try {
               const rel = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
               await github.rest.repos.deleteRelease({ owner, repo, release_id: rel.data.id });
