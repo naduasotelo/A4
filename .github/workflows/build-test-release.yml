@@ -1,9 +1,9 @@
-name: Build → Tests → Staging → Production
+name: Build-Test-Release (dev)
 
 on:
-  workflow_dispatch: {}
   push:
     branches: [ master ]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -33,76 +33,39 @@ jobs:
           name: build
           path: build.zip
 
-  test-unit:
+  test:
     runs-on: ubuntu-latest
     needs: build
-    env:
-      TEST_ENV: staging
     steps:
       - uses: actions/download-artifact@v4
         with: { name: build }
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - name: Run unit tests
+      - name: Run automated tests
         run: |
           if [ -f package.json ]; then
             npm ci || npm install
-            npm run test:unit
+            npm test
           else
-            echo "No package.json, mock unit passed"
+            echo "No tests found (no package.json). Running a smoke check."
+            node -e "console.log('smoke ok')"
           fi
 
-  test-integration:
+  release-dev:
     runs-on: ubuntu-latest
-    needs: test-unit
-    env:
-      TEST_ENV: staging
+    needs: test
+    environment: dev
     steps:
       - uses: actions/download-artifact@v4
         with: { name: build }
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - name: Run integration tests
-        run: |
-          if [ -f package.json ]; then
-            npm ci || npm install
-            npm run test:integration
-          else
-            echo "No package.json, mock integration passed"
-          fi
-
-  deploy-staging:
-    runs-on: ubuntu-latest
-    needs: test-integration
-    environment: staging
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: build }
-      - name: Release to Staging
+      - name: Release to Dev
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ vars.BUILD_TAG || format('staging-{0}', github.run_number) }}
-          name: ${{ vars.BUILD_TAG || format('staging-{0}', github.run_number) }}
-          body: ${{ vars.RELEASE_NOTE || 'Testing pre-production release' }}
+          tag_name: ${{ vars.BUILD_TAG || format('dev-{0}', github.run_number) }}
+          name: ${{ vars.BUILD_TAG || format('dev-{0}', github.run_number) }}
+          body: ${{ vars.RELEASE_NOTE || 'Automated dev release after tests' }}
           files: build.zip
+          draft: false
           prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  deploy-production:
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    environment: production   # ← requires approval
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: build }
-      - name: Release to Production
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ vars.BUILD_TAG || format('prod-{0}', github.run_number) }}
-          name: ${{ vars.BUILD_TAG || format('prod-{0}', github.run_number) }}
-          body: ${{ vars.RELEASE_NOTE || 'Production release' }}
-          files: build.zip
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
