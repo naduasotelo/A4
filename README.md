@@ -1,3 +1,4 @@
+![O Notifications](https://github.com/naduasotelo/A4/actions/workflows/o-notify.yml/badge.svg)
 
 <h1 align="center" id="title">Activity Log</h1>
 
