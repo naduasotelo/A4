@@ -101,37 +101,49 @@ jobs:
               title: `CI tests failed (run #${context.runNumber})`,
               body: `Automated issue: matrix tests failed.\nSee logs: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
-
-
+  
+  
   coverage-gate:
     runs-on: ubuntu-latest
     needs: test-matrix
+    env:
+      GATE_MIN: 70
     steps:
-      - name: Download any coverage artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: coverage-*
-          path: cov
-          merge-multiple: true
+    - name: Download any coverage artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-*
+        path: cov
+        merge-multiple: true
 
-      - name: Locate coverage-summary.json
-        shell: bash
-        run: |
-          FILE=$(ls -1 cov/**/coverage-summary.json 2>/dev/null | head -n1 || true)
-          if [ -z "$FILE" ]; then
-            echo "No coverage-summary.json found"; exit 1
-          fi
-          echo "COVERAGE_FILE=$FILE" >> $GITHUB_ENV
-          echo "Found: $FILE"
+    - name: Show what was downloaded
+      shell: bash
+      run: |
+        echo "=== tree cov ==="
+        find cov -type f | sed 's/^/  /' || true
 
-      - name: Enforce coverage ≥ 70%
-        shell: bash
-        run: |
-          echo "Using $COVERAGE_FILE"
-          LINE=$(node -e "let s=require(process.env.COVERAGE_FILE); console.log(s.total.lines.pct)")
-          echo "Line coverage: $LINE%"
-          awk "BEGIN {exit ($LINE<70)}"
+    - name: Locate coverage-summary.json (first match)
+      id: findcov
+      shell: bash
+      run: |
+        FILE=$(ls -1 cov/**/coverage-summary.json 2>/dev/null | head -n1 || true)
+        if [ -z "$FILE" ]; then
+          echo "No coverage-summary.json found -> FAIL"
+          exit 1
+        fi
+        echo "Found: $FILE"
+        echo "COVERAGE_FILE=$FILE" >> $GITHUB_ENV
 
+    - name: Enforce coverage ≥ ${{ env.GATE_MIN }}%
+      shell: bash
+      run: |
+        echo "Using $COVERAGE_FILE"
+        LINE=$(node -e "try{let s=require(process.env.COVERAGE_FILE); let v=Number(s?.total?.lines?.pct||0); console.log(isNaN(v)?0:v);}catch(e){console.log(0)}")
+        echo "Line coverage: ${LINE}% (min ${GATE_MIN}%)"
+        # compara como número; si < min => exit 1
+        awk -v L="$LINE" -v M="$GATE_MIN" 'BEGIN{exit (L<M)}'
+
+ 
   deploy-staging:
     runs-on: ubuntu-latest
     needs: coverage-gate
