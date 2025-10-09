@@ -15,7 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
       - name: Install deps (skip if no package.json)
         run: |
           if [ -f package.json ]; then npm ci || npm install; else echo "no package.json"; fi
@@ -40,7 +41,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: ${{ matrix.node }} }
+        with:
+          node-version: ${{ matrix.node }}
       - name: Install deps
         run: |
           if [ -f package.json ]; then npm ci || npm install; else echo "no package.json"; fi
@@ -80,21 +82,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: test-matrix
     steps:
-      - name: Download coverage (ubuntu, node 20)
+      - name: Download any coverage artifacts
         uses: actions/download-artifact@v4
         with:
-          name: coverage-ubuntu-latest-node20
-          path: cov20
-      - name: Enforce coverage ≥ 70%
+          pattern: coverage-*
+          path: cov
+          merge-multiple: true
+
+      - name: Locate coverage-summary.json
+        shell: bash
         run: |
-          SUMMARY="cov20/coverage/coverage-summary.json"
-          if [ -f "$SUMMARY" ]; then
-            LINE=$(node -e "let s=require('./'+process.argv[1]); console.log(s.total.lines.pct)" "$SUMMARY")
-            echo "Line coverage: $LINE%"
-            awk "BEGIN {exit ($LINE<70)}"
-          else
-            echo "No coverage file found"; exit 1
+          FILE=$(ls -1 cov/**/coverage-summary.json 2>/dev/null | head -n1 || true)
+          if [ -z "$FILE" ]; then
+            echo "No coverage-summary.json found"; exit 1
           fi
+          echo "COVERAGE_FILE=$FILE" >> $GITHUB_ENV
+          echo "Found: $FILE"
+
+      - name: Enforce coverage ≥ 70%
+        shell: bash
+        run: |
+          echo "Using $COVERAGE_FILE"
+          LINE=$(node -e "let s=require(process.env.COVERAGE_FILE); console.log(s.total.lines.pct)")
+          echo "Line coverage: $LINE%"
+          awk "BEGIN {exit ($LINE<70)}"
 
   deploy-staging:
     runs-on: ubuntu-latest
@@ -102,7 +113,8 @@ jobs:
     environment: staging
     steps:
       - uses: actions/download-artifact@v4
-        with: { name: build }
+        with:
+          name: build
       - name: Release to Staging
         uses: softprops/action-gh-release@v2
         with:
@@ -120,7 +132,8 @@ jobs:
     environment: production
     steps:
       - uses: actions/download-artifact@v4
-        with: { name: build }
+        with:
+          name: build
       - name: Release to Production
         uses: softprops/action-gh-release@v2
         with:
