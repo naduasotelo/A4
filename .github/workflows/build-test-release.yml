@@ -50,9 +50,6 @@ jobs:
             echo "No tests found (no package.json). Running a smoke check."
             node -e "console.log('smoke ok')"
           fi
-      - name: Force test fail (for demo)
-        run: exit 1
-
 
   release-dev:
     runs-on: ubuntu-latest
